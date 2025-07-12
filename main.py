@@ -1,3 +1,5 @@
+import boto3
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -56,27 +58,53 @@ def summarize():
         # 영어(en)와 한국어(ko) 자막을 가져옵니다.
         transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'ko'])
     except Exception as e:
+        print('Error: 자막 변환 실패')
         return jsonify({"error": f"자막을 가져오는 데 실패했습니다: {str(e)}"}), 500
 
-    # 자막을 텍스트로 포맷합니다.
-    text_formatter = TextFormatter()
-    text_formatted = text_formatter.format_transcript(transcript)
-    text_info = text_formatted.replace("\n", " ")
-    #print(text_info)
+    # 자막을 텍스트 포맷으로 변환
+    text_formatted = ""
+    for item in transcript:
+        text_formatted += item['text']
 
     try:
         system_prompt = f"You are a summarizer assistant. And you always responds in Markdown format.\n"
-        prompt = f"Below is the content that needs to be summarized:\n{text_info}\n\n"
+        prompt = f"Below is the content that needs to be summarized:\n{text_formatted}\n\n"
         prompt += f"Please summarize the content in detail in Korean. "
         prompt += f"Your response must be entirely in Markdown format. "
-        prompt += f"Do not use JSON formatting or output any JSON structure."
+        prompt += f"Do not use JSON formatting or output any JSON structure. "
+        prompt += f"Do not include the word 'summary' or '요약' in the title of your response."
 
         service = query.GeminiService()
         response = service.ask(system_prompt, prompt)
+
+        # Markdown 형식의 응답에서 제목 추출 (첫 번째 # 또는 ##으로 시작하는 줄)
+        title = "notitle"
+        for line in response.split('\n'):
+            if line.startswith('# '):
+                title = line[2:].strip()  # #과 공백 제거
+                break
+            elif line.startswith('## '):
+                title = line[3:].strip()  # ##과 공백 제거
+                break
+
+        # 현재 날짜와 시간을 파일명에 포함
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # S3에 저장할 파일명 생성
+        s3_filename = f"{current_time}_{title}.md"
+
+        # S3에 파일 업로드
+        s3 = boto3.client('s3')
+        s3.put_object(
+            Bucket='jonghyunho.com',
+            Key=f"youtube/{s3_filename}",
+            Body=response.encode('utf-8'),
+            ContentType='text/markdown'
+        )
     except Exception as e:
         return jsonify({"error": f"요약 요청에 실패했습니다: {str(e)}"}), 500
 
     return response, 200
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5050)
+    app.run(debug=True, host='0.0.0.0', port=5051)
